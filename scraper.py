@@ -1,217 +1,332 @@
 """
-Subscene Scraper - Core Scraping Engine
-Handles all HTTP requests and HTML parsing
+Subscene Scraper - Core Engine (Fixed for sub-scene.com)
 """
 
 import requests
 from bs4 import BeautifulSoup
 import time
 import re
-from config import BASE_URL, SEARCH_URL, HEADERS, TIMEOUT, MAX_RETRIES, DELAY_BETWEEN_REQUESTS
+from urllib.parse import urljoin, quote_plus
+from config import BASE_URL, SEARCH_URL, HEADERS, TIMEOUT, MAX_RETRIES, DELAY
 
 
 class SubsceneScraper:
-    """Main scraper class for Subscene website"""
 
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+        print("✅ Scraper initialized!")
 
-    def _make_request(self, url, method="GET", data=None):
-        """
-        Make HTTP request with retry logic
-        Args:
-            url: Target URL
-            method: GET or POST
-            data: POST data if needed
-        Returns:
-            BeautifulSoup object or None
-        """
+    def _request(self, url, method="GET", data=None, params=None):
+        """Make HTTP request with retries"""
         for attempt in range(MAX_RETRIES):
             try:
                 if method == "POST":
-                    response = self.session.post(url, data=data, timeout=TIMEOUT)
+                    resp = self.session.post(url, data=data, timeout=TIMEOUT)
                 else:
-                    response = self.session.get(url, timeout=TIMEOUT)
+                    resp = self.session.get(url, params=params, timeout=TIMEOUT)
 
-                response.raise_for_status()
-                return BeautifulSoup(response.content, "html.parser")
+                resp.raise_for_status()
+                return BeautifulSoup(resp.content, "html.parser")
 
             except requests.exceptions.RequestException as e:
-                print(f"  ⚠️ Attempt {attempt + 1}/{MAX_RETRIES} failed: {e}")
+                print(f"  ⚠️ Attempt {attempt+1}/{MAX_RETRIES}: {e}")
                 if attempt < MAX_RETRIES - 1:
-                    time.sleep(DELAY_BETWEEN_REQUESTS * (attempt + 1))
-
-        print("  ❌ All attempts failed!")
+                    time.sleep(DELAY * (attempt + 1))
         return None
 
     def search(self, query):
         """
-        Search for a movie/series on Subscene
-        Args:
-            query: Search term (movie/series name)
-        Returns:
-            List of dicts: [{"title": ..., "url": ...}, ...]
+        Search for movie/series
+        Supports: movie name OR IMDb ID (tt1234567)
+        URL format: https://sub-scene.com/search?query=xxx
         """
-        print(f"\n🔍 Searching for: '{query}'...")
+        print(f"\n🔍 Searching: '{query}'...")
 
-        # Subscene search is POST-based
-        data = {"query": query}
-        soup = self._make_request(SEARCH_URL, method="POST", data=data)
+        # ✅ Fixed: GET request with query parameter
+        params = {"query": query}
+        soup = self._request(SEARCH_URL, method="GET", params=params)
 
         if not soup:
+            print("  ❌ Search failed!")
             return []
 
         results = []
+        seen = set()
 
-        # Parse search results
-        # Subscene organizes results in categories: Popular, Exact, Close, TV-Series
-        search_sections = soup.find_all("div", class_="search-result")
+        # ============================================
+        # Method 1: Find all links containing /subtitles/
+        # ============================================
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
 
-        for section in search_sections:
-            # Get all result items
-            items = section.find_all("div", class_="title")
-            for item in items:
-                link = item.find("a")
-                if link and link.get("href"):
-                    title = link.get_text(strip=True)
-                    url = BASE_URL + link["href"]
+            # Filter subtitle-related links
+            if "/subtitles/" in href or "/subtitle/" in href:
+                title = link.get_text(strip=True)
+
+                # Skip empty or very short titles
+                if not title or len(title) < 2:
+                    continue
+
+                # Skip navigation/filter links
+                skip_words = ["search", "login", "register", "filter", "sort", "page"]
+                if any(w in href.lower() for w in skip_words):
+                    continue
+
+                full_url = urljoin(BASE_URL, href)
+
+                if full_url not in seen:
+                    seen.add(full_url)
                     results.append({
                         "title": title,
-                        "url": url
+                        "url": full_url
                     })
 
-        # Alternative parsing if structure is different
+        # ============================================
+        # Method 2: Try finding in div/li structures
+        # ============================================
         if not results:
-            all_links = soup.select("div.title a, ul li div.title a")
-            for link in all_links:
-                if link.get("href") and "/subtitles/" in link["href"]:
-                    title = link.get_text(strip=True)
-                    href = link["href"]
-                    if not href.startswith("http"):
-                        href = BASE_URL + href
+            # Look for common structures
+            for container in soup.find_all(["div", "li", "tr"]):
+                link = container.find("a", href=True)
+                if not link:
+                    continue
+
+                href = link["href"]
+                if "/subtitles/" not in href and "/subtitle/" not in href:
+                    continue
+
+                title = link.get_text(strip=True)
+                if not title or len(title) < 2:
+                    # Try getting text from parent
+                    title = container.get_text(strip=True)[:100]
+
+                if title:
+                    full_url = urljoin(BASE_URL, href)
+                    if full_url not in seen:
+                        seen.add(full_url)
+                        results.append({
+                            "title": title,
+                            "url": full_url
+                        })
+
+        # ============================================
+        # Method 3: Check if redirected to subtitle page directly
+        # ============================================
+        if not results:
+            # Sometimes searching by IMDB ID redirects directly
+            page_title = soup.find("title")
+            if page_title:
+                pt = page_title.get_text(strip=True)
+                if pt and "search" not in pt.lower():
+                    # We might be on the subtitle page already
                     results.append({
-                        "title": title,
-                        "url": href
+                        "title": pt,
+                        "url": SEARCH_URL + "?query=" + quote_plus(query)
                     })
 
         print(f"  ✅ Found {len(results)} results")
         return results
 
-    def get_subtitles(self, page_url, language_filter=None):
-        """
-        Get all subtitle links from a movie/series page
-        Args:
-            page_url: URL of the movie/series subtitle page
-            language_filter: Filter by language name (e.g., "Arabic")
-        Returns:
-            List of dicts: [{"language": ..., "title": ..., "url": ..., "author": ...}, ...]
-        """
-        print(f"\n📄 Fetching subtitles from page...")
-        time.sleep(DELAY_BETWEEN_REQUESTS)
+    def get_subtitles(self, page_url, lang_filter=None):
+        """Get all subtitles from a movie/series page"""
+        print(f"\n📄 Loading subtitles...")
+        time.sleep(DELAY)
 
-        soup = self._make_request(page_url)
+        soup = self._request(page_url)
         if not soup:
             return []
 
         subtitles = []
 
-        # Find subtitle table
+        # ============================================
+        # Method 1: Table-based layout (traditional subscene)
+        # ============================================
         table = soup.find("table") or soup.find("tbody")
-
         if table:
-            rows = table.find_all("tr")
+            rows = table.find_all("tr") if table.name == "table" else table.find_all("tr")
             for row in rows:
-                try:
-                    # Get the main link cell
-                    cells = row.find_all("td")
-                    if len(cells) < 1:
-                        continue
+                sub = self._parse_subtitle_row(row, lang_filter)
+                if sub:
+                    subtitles.append(sub)
 
-                    link_cell = cells[0]
-                    link = link_cell.find("a")
+        # ============================================
+        # Method 2: Div-based layout
+        # ============================================
+        if not subtitles:
+            # Try finding subtitle items in divs
+            sub_containers = soup.find_all("div", class_=re.compile(r"subtitle|sub-item|result", re.I))
+            if not sub_containers:
+                sub_containers = soup.find_all("a", href=re.compile(r"/subtitles/.*/.*/"))
 
-                    if not link or not link.get("href"):
-                        continue
+            for container in sub_containers:
+                sub = self._parse_subtitle_div(container, lang_filter)
+                if sub:
+                    subtitles.append(sub)
 
-                    # Extract language and title
-                    spans = link.find_all("span")
-                    if len(spans) >= 2:
-                        language = spans[0].get_text(strip=True)
-                        title = spans[1].get_text(strip=True)
-                    elif len(spans) == 1:
-                        language = spans[0].get_text(strip=True)
-                        title = link.get_text(strip=True)
-                    else:
+        # ============================================
+        # Method 3: Generic link search
+        # ============================================
+        if not subtitles:
+            for link in soup.find_all("a", href=True):
+                href = link["href"]
+                # Subtitle detail pages usually have deeper paths
+                if "/subtitles/" in href and href.count("/") >= 3:
+                    text = link.get_text(strip=True)
+                    if text and len(text) > 3:
+                        # Try to extract language
                         language = "Unknown"
-                        title = link.get_text(strip=True)
+                        spans = link.find_all("span")
+                        if spans:
+                            language = spans[0].get_text(strip=True)
+                            if len(spans) >= 2:
+                                text = spans[1].get_text(strip=True)
 
-                    # Filter by language if specified
-                    if language_filter and language_filter.lower() not in language.lower():
-                        continue
+                        if lang_filter and lang_filter.lower() not in language.lower():
+                            continue
 
-                    # Get author if available
-                    author = ""
-                    if len(cells) > 1:
-                        author_cell = cells[1] if len(cells) > 1 else None
-                        if author_cell:
-                            author = author_cell.get_text(strip=True)
-
-                    # Build URL
-                    sub_url = link["href"]
-                    if not sub_url.startswith("http"):
-                        sub_url = BASE_URL + sub_url
-
-                    subtitles.append({
-                        "language": language,
-                        "title": title,
-                        "url": sub_url,
-                        "author": author
-                    })
-
-                except Exception as e:
-                    continue
+                        full_url = urljoin(BASE_URL, href)
+                        subtitles.append({
+                            "language": language,
+                            "title": text,
+                            "url": full_url,
+                            "author": ""
+                        })
 
         print(f"  ✅ Found {len(subtitles)} subtitles")
         return subtitles
 
-    def get_download_link(self, subtitle_page_url):
-        """
-        Extract the actual download link from a subtitle's page
-        Args:
-            subtitle_page_url: URL of the individual subtitle page
-        Returns:
-            Direct download URL string or None
-        """
-        time.sleep(DELAY_BETWEEN_REQUESTS)
+    def _parse_subtitle_row(self, row, lang_filter=None):
+        """Parse a table row to extract subtitle info"""
+        try:
+            link = row.find("a", href=True)
+            if not link:
+                return None
 
-        soup = self._make_request(subtitle_page_url)
+            href = link["href"]
+            if "/subtitles/" not in href and "/subtitle/" not in href:
+                return None
+
+            # Extract language and title from spans
+            spans = link.find_all("span")
+            if len(spans) >= 2:
+                language = spans[0].get_text(strip=True)
+                title = spans[1].get_text(strip=True)
+            elif len(spans) == 1:
+                language = spans[0].get_text(strip=True)
+                title = link.get_text(strip=True)
+            else:
+                language = "Unknown"
+                title = link.get_text(strip=True)
+
+            # Clean up
+            language = language.strip()
+            title = title.strip()
+
+            if not title:
+                return None
+
+            # Language filter
+            if lang_filter and lang_filter.lower() not in language.lower():
+                return None
+
+            # Author
+            author = ""
+            cells = row.find_all("td")
+            for cell in cells[1:]:
+                text = cell.get_text(strip=True)
+                if text and text != language and text != title:
+                    author = text
+                    break
+
+            return {
+                "language": language,
+                "title": title,
+                "url": urljoin(BASE_URL, href),
+                "author": author
+            }
+        except Exception:
+            return None
+
+    def _parse_subtitle_div(self, container, lang_filter=None):
+        """Parse a div container to extract subtitle info"""
+        try:
+            if container.name == "a":
+                link = container
+            else:
+                link = container.find("a", href=True)
+
+            if not link:
+                return None
+
+            href = link.get("href", "")
+            if "/subtitles/" not in href and "/subtitle/" not in href:
+                return None
+
+            # Try to get language
+            language = "Unknown"
+            lang_elem = container.find(class_=re.compile(r"lang|language", re.I))
+            if lang_elem:
+                language = lang_elem.get_text(strip=True)
+            else:
+                spans = link.find_all("span")
+                if spans:
+                    language = spans[0].get_text(strip=True)
+
+            title = link.get_text(strip=True)
+            if not title:
+                return None
+
+            if lang_filter and lang_filter.lower() not in language.lower():
+                return None
+
+            return {
+                "language": language,
+                "title": title,
+                "url": urljoin(BASE_URL, href),
+                "author": ""
+            }
+        except Exception:
+            return None
+
+    def get_download_link(self, sub_page_url):
+        """Extract download link from subtitle page"""
+        time.sleep(DELAY)
+        soup = self._request(sub_page_url)
         if not soup:
             return None
 
-        # Find download button/link
-        download_btn = soup.find("a", id="downloadButton")
-        if not download_btn:
-            download_btn = soup.find("a", {"id": "downloadButton"})
-        if not download_btn:
-            download_btn = soup.select_one("a.download, #downloadButton, a[href*='subtitle/download']")
-        if not download_btn:
-            # Try to find any download link
-            all_links = soup.find_all("a")
-            for link in all_links:
-                href = link.get("href", "")
-                if "download" in href.lower():
-                    download_btn = link
-                    break
+        # ✅ Try multiple methods to find download button
+        # Method 1: ID-based
+        for id_name in ["downloadButton", "download-button", "btn-download"]:
+            btn = soup.find("a", id=id_name)
+            if btn and btn.get("href"):
+                return urljoin(BASE_URL, btn["href"])
 
-        if download_btn and download_btn.get("href"):
-            download_url = download_btn["href"]
-            if not download_url.startswith("http"):
-                download_url = BASE_URL + download_url
-            return download_url
+        # Method 2: Class-based
+        for class_name in ["download", "btn-download", "download-btn"]:
+            btn = soup.find("a", class_=class_name)
+            if btn and btn.get("href"):
+                return urljoin(BASE_URL, btn["href"])
+
+        # Method 3: Text-based
+        for link in soup.find_all("a", href=True):
+            text = link.get_text(strip=True).lower()
+            href = link["href"].lower()
+            if "download" in text or "download" in href:
+                if "javascript" not in href:
+                    return urljoin(BASE_URL, link["href"])
+
+        # Method 4: Button element
+        btn = soup.find("button", onclick=True)
+        if btn:
+            onclick = btn.get("onclick", "")
+            urls = re.findall(r"['\"]([^'\"]*download[^'\"]*)['\"]", onclick)
+            if urls:
+                return urljoin(BASE_URL, urls[0])
 
         return None
 
     def close(self):
-        """Close the session"""
         self.session.close()
+        print("✅ Session closed")
