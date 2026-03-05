@@ -1,203 +1,208 @@
 """
 Subscene Scraper - Main Entry Point
-Interactive CLI for searching and downloading subtitles
 """
 
 from scraper import SubsceneScraper
 from downloader import DownloadManager
 from config import LANGUAGES
-import sys
 
 
-def display_banner():
-    """Show application banner"""
+def banner():
     print("""
-╔══════════════════════════════════════════════════╗
-║          🎬 Subscene Subtitle Scraper 🎬         ║
-║              v1.0 - Made with Python             ║
-╚══════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════╗
+║           🎬 Subscene Subtitle Scraper 🎬            ║
+║        sub-scene.com | v1.1 Fixed Edition            ║
+║                                                      ║
+║  Search by: Movie Name  OR  IMDb ID (tt1234567)      ║
+╚══════════════════════════════════════════════════════════╝
     """)
 
 
-def select_from_list(items, display_key, prompt="Select"):
-    """
-    Display numbered list and get user selection
-    Args:
-        items: List of items
-        display_key: Key to display (for dicts) or None (for strings)
-        prompt: Selection prompt text
-    Returns:
-        Selected item or None
-    """
+def pick_one(items, key):
+    """Select single item"""
     if not items:
-        print("  ⚠️ No items to display!")
+        print("  ⚠️ No results!")
         return None
 
     print()
     for i, item in enumerate(items, 1):
-        if isinstance(item, dict):
-            print(f"  [{i}] {item.get(display_key, 'Unknown')}")
-        else:
-            print(f"  [{i}] {item}")
-
-    print(f"  [0] Cancel")
+        print(f"  [{i}] {item[key]}")
+    print(f"  [0] ❌ Cancel")
 
     while True:
         try:
-            choice = input(f"\n  {prompt} (number): ").strip()
-            if choice == "0":
+            c = input(f"\n  👉 Choose number: ").strip()
+            if c == "0":
                 return None
-            idx = int(choice) - 1
+            idx = int(c) - 1
             if 0 <= idx < len(items):
                 return items[idx]
-            print("  ⚠️ Invalid number, try again!")
+            print("  ⚠️ Invalid number!")
         except ValueError:
-            print("  ⚠️ Please enter a number!")
+            print("  ⚠️ Enter a number!")
 
 
-def select_language():
-    """Let user select subtitle language"""
-    print("\n🌍 Available Languages:")
-    for key, lang in LANGUAGES.items():
-        print(f"  [{key}] {lang}")
-    print("  [0] All Languages")
-
-    choice = input("\n  Select language: ").strip()
-    return LANGUAGES.get(choice, None)
-
-
-def multi_select_from_list(items, display_key):
-    """
-    Let user select multiple items
-    Args:
-        items: List of items
-        display_key: Key to display
-    Returns:
-        List of selected items
-    """
+def pick_many(items):
+    """Select multiple items"""
     if not items:
-        print("  ⚠️ No items to display!")
         return []
 
-    print()
+    print(f"\n📋 Available Subtitles ({len(items)}):")
+    print("─" * 60)
     for i, item in enumerate(items, 1):
-        if isinstance(item, dict):
-            lang = item.get("language", "")
-            title = item.get("title", "")
-            print(f"  [{i}] [{lang}] {title}")
-        else:
-            print(f"  [{i}] {item}")
+        lang = item.get("language", "?")
+        title = item.get("title", "?")[:55]
+        print(f"  [{i:3d}] [{lang:>10s}] {title}")
+    print("─" * 60)
+    print(f"  [a] ✅ Select ALL ({len(items)} files)")
+    print(f"  [0] ❌ Cancel")
 
-    print(f"\n  [a] Select ALL")
-    print(f"  [0] Cancel")
+    c = input(f"\n  👉 Choose (e.g. 1,3,5 or 'a' for all): ").strip()
 
-    choice = input(f"\n  Select (comma-separated, e.g., 1,3,5): ").strip()
-
-    if choice == "0":
+    if c == "0":
         return []
-    if choice.lower() == "a":
+    if c.lower() == "a":
         return items
 
     selected = []
     try:
-        indices = [int(x.strip()) - 1 for x in choice.split(",")]
-        for idx in indices:
-            if 0 <= idx < len(items):
-                selected.append(items[idx])
+        for x in c.split(","):
+            x = x.strip()
+            # Support ranges like 1-5
+            if "-" in x:
+                parts = x.split("-")
+                start, end = int(parts[0]), int(parts[1])
+                for idx in range(start - 1, end):
+                    if 0 <= idx < len(items):
+                        selected.append(items[idx])
+            else:
+                idx = int(x) - 1
+                if 0 <= idx < len(items):
+                    selected.append(items[idx])
     except ValueError:
         print("  ⚠️ Invalid input!")
 
     return selected
 
 
-def main():
-    """Main application flow"""
-    display_banner()
+def pick_lang():
+    """Select language filter"""
+    print("\n🌍 Filter by Language:")
+    for k, v in LANGUAGES.items():
+        print(f"  [{k}] {v}")
+    print(f"  [0] 🌐 All Languages")
 
+    c = input("\n  👉 Choose: ").strip()
+    lang = LANGUAGES.get(c, None)
+    print(f"  🌍 Selected: {lang or 'All Languages'}")
+    return lang
+
+
+def main():
+    banner()
     scraper = SubsceneScraper()
-    downloader = DownloadManager()
+    dl = DownloadManager()
 
     try:
         while True:
-            # Step 1: Search
-            query = input("\n🎬 Enter movie/series name (or 'quit' to exit): ").strip()
+            print("\n" + "=" * 50)
+            query = input("🎬 Enter movie name or IMDb ID (q to quit): ").strip()
 
-            if query.lower() in ("quit", "exit", "q"):
+            if query.lower() in ("q", "quit", "exit"):
                 print("\n👋 Goodbye!")
                 break
 
             if not query:
-                print("  ⚠️ Please enter a search term!")
+                print("  ⚠️ Please enter something!")
                 continue
 
-            # Step 2: Get search results
+            # ============================================
+            # Step 1: Search
+            # ============================================
             results = scraper.search(query)
 
             if not results:
-                print("  ❌ No results found! Try different keywords.")
+                print("  ❌ No results! Try different keywords.")
                 continue
 
-            # Step 3: Select a title
-            selected_title = select_from_list(results, "title", "Select title")
-
-            if not selected_title:
+            # ============================================
+            # Step 2: Pick title
+            # ============================================
+            title = pick_one(results, "title")
+            if not title:
                 continue
 
-            print(f"\n  ✅ Selected: {selected_title['title']}")
+            print(f"\n  ✅ Selected: {title['title']}")
+            print(f"  🔗 URL: {title['url']}")
 
-            # Step 4: Select language
-            language = select_language()
-            lang_display = language if language else "All"
-            print(f"  🌍 Language: {lang_display}")
+            # ============================================
+            # Step 3: Pick language
+            # ============================================
+            lang = pick_lang()
 
-            # Step 5: Get subtitles
-            subtitles = scraper.get_subtitles(selected_title["url"], language)
+            # ============================================
+            # Step 4: Get subtitles
+            # ============================================
+            subs = scraper.get_subtitles(title["url"], lang)
 
-            if not subtitles:
-                print("  ❌ No subtitles found for this selection!")
+            if not subs:
+                print("  ❌ No subtitles found!")
                 continue
 
-            # Step 6: Select subtitles to download
-            print(f"\n📋 Found {len(subtitles)} subtitles:")
-            selected_subs = multi_select_from_list(subtitles, "title")
+            # ============================================
+            # Step 5: Pick subtitles
+            # ============================================
+            chosen = pick_many(subs)
 
-            if not selected_subs:
+            if not chosen:
                 continue
 
-            print(f"\n  ✅ Selected {len(selected_subs)} subtitles for download")
+            print(f"\n  ✅ Selected {len(chosen)} subtitles")
 
-            # Step 7: Get download links and download
-            download_links = []
+            # ============================================
+            # Step 6: Extract download links
+            # ============================================
+            print(f"\n🔗 Extracting download links...")
+            print("─" * 50)
 
-            print("\n🔗 Extracting download links...")
-            for i, sub in enumerate(selected_subs, 1):
-                print(f"  [{i}/{len(selected_subs)}] Processing: {sub['title'][:50]}...")
-                dl_link = scraper.get_download_link(sub["url"])
-
-                if dl_link:
-                    download_links.append((dl_link, sub["title"]))
-                    print(f"    ✅ Link found!")
+            dl_links = []
+            for i, sub in enumerate(chosen, 1):
+                short_title = sub["title"][:45]
+                print(f"  [{i}/{len(chosen)}] {short_title}...", end=" ")
+                link = scraper.get_download_link(sub["url"])
+                if link:
+                    dl_links.append((link, sub["title"]))
+                    print("✅")
                 else:
-                    print(f"    ❌ Could not extract download link")
+                    print("❌ (no link found)")
 
-            if not download_links:
-                print("\n  ❌ No download links could be extracted!")
+            print("─" * 50)
+
+            if not dl_links:
+                print("  ❌ Could not extract any download links!")
                 continue
 
-            # Step 8: Download files
-            downloaded = downloader.download_multiple(download_links)
+            print(f"  📊 Got {len(dl_links)}/{len(chosen)} links")
 
-            # Step 9: Auto-zip if needed
+            # ============================================
+            # Step 7: Download
+            # ============================================
+            downloaded = dl.download_batch(dl_links)
+
+            # ============================================
+            # Step 8: Auto-zip if needed
+            # ============================================
             if downloaded:
-                zip_result = downloader.auto_zip_if_needed()
+                zip_result = dl.auto_zip()
                 if zip_result:
-                    # Ask if user wants to cleanup individual files
                     cleanup = input("\n  🧹 Delete individual files? (y/n): ").strip().lower()
                     if cleanup == "y":
-                        downloader.cleanup()
+                        dl.cleanup()
 
-            print("\n" + "=" * 50)
-            print("✅ Operation completed!")
+            # Show results
+            dl.show_files()
+
+            print("\n✅ Operation completed!")
             print("=" * 50)
 
     except KeyboardInterrupt:
