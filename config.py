@@ -4,10 +4,10 @@ All settings and constants go here
 """
 
 # Base URL
-BASE_URL = "https://subscene.com"
+BASE_URL = "https://sub-scene.com"
 
 # Search URL
-SEARCH_URL = f"{BASE_URL}/subtitles/searchbytitle"
+SEARCH_URL = f"{BASE_URL}/search?query=a"
 
 # Headers to mimic browser
 HEADERS = {
